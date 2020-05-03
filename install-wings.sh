@@ -474,7 +474,7 @@ function goodbye {
   echo "* "
   echo -e "* ${COLOR_RED}Note${COLOR_NC}: It is recommended to enable swap (for Docker, read more about it in official documentation)."
   #echo -e "* ${COLOR_RED}Note${COLOR_NC}: This script does not configure your firewall. Ports 8080 and 2022 needs to be open."
-  echo -e "* ${COLOR_RED}Note${COLOR_NC}:
+  echo -e "* ${COLOR_RED}Note${COLOR_NC}: i frgot dammit"
   print_brake 70
   echo ""
 }
