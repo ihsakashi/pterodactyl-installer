@@ -41,13 +41,14 @@ VERSION="$(get_latest_release "pterodactyl/wings")"
 echo "* Latest version is $VERSION"
 
 # download URLs
-DL_URL="https://github.com/pterodactyl/wings/releases/latest/download/wings"
-CONFIGS_URL="https://raw.githubusercontent.com/VilhelmPrytz/pterodactyl-installer/master/configs"
+DL_URL="https://github.com/pterodactyl/wings/releases/download/v1.0.0-beta.2/wings"
+CONFIGS_URL="https://raw.githubusercontent.com/ihsakashi/pterodactyl-installer/pterodactyl-1.0/configs"
 
 COLOR_RED='\033[0;31m'
 COLOR_NC='\033[0m'
 
 INSTALL_MARIADB=false
+INSTALL_CUSTOM=false
 
 # visual functions
 function print_error {
@@ -228,21 +229,25 @@ function install_docker {
       curl \
       software-properties-common
 
-    # get their GPG key
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+    if [ "$OS_VER_MAJOR" >= "19" ]; then
+      apt-get -y install docker.io
+    else
+      # get their GPG key
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
 
-    # show fingerprint to user
-    apt-key fingerprint 0EBFCD88
+      # show fingerprint to user
+      apt-key fingerprint 0EBFCD88
 
-    # add APT repo
-    sudo add-apt-repository \
-     "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
-     $(lsb_release -cs) \
-     stable"
+      # add APT repo
+      sudo add-apt-repository \
+      "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) \
+      stable"
 
-    # install docker
-    apt-get update
-    apt-get -y install docker-ce
+      # install docker
+      apt-get update
+      apt-get -y install docker-ce
+    fi
 
     # make sure it's enabled & running
     systemctl start docker
@@ -328,6 +333,54 @@ function install_mariadb {
   systemctl start mariadb
 }
 
+function install_custom {
+  # FIREWALL
+  rm -rf /etc/rc.local
+  printf '%s\n' '#!/bin/bash' 'exit 0' | sudo tee -a /etc/rc.local
+  chmod +x /etc/rc.local
+
+  iptables -t mangle -A PREROUTING -m conntrack --ctstate INVALID -j DROP
+  iptables -t mangle -A PREROUTING -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+  iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate NEW -m tcpmss ! --mss 536:65535 -j DROP
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG NONE -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,SYN FIN,SYN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags SYN,RST SYN,RST -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,RST FIN,RST -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,ACK FIN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,URG URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,FIN FIN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,PSH PSH -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL ALL -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL NONE -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL FIN,PSH,URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL SYN,FIN,PSH,URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+  iptables -A INPUT -p tcp -m connlimit --connlimit-above 1000 --connlimit-mask 32 --connlimit-saddr -j REJECT --reject-with tcp-reset
+  iptables -t mangle -A PREROUTING -f -j DROP
+  /sbin/iptables -N port-scanning 
+  /sbin/iptables -A port-scanning -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s --limit-burst 2 -j RETURN 
+  /sbin/iptables -A port-scanning -j DROP  
+  sh -c "iptables-save > /etc/iptables.conf"
+  sed -i -e '$i \iptables-restore < /etc/iptables.conf\n' /etc/rc.local
+
+  apt -y install fail2ban
+  systemctl enable fail2ban
+  curl -o /etc/fail2ban/jail.local $CONFIGS_URL/jail.local
+  service fail2ban restart
+
+  # ubuntu specific
+  apt-get -y install ufw
+  ufw allow 22
+
+  # daemon/wing specific
+  ufw allow 80
+  ufw allow 8080
+  ufw allow 2022
+
+  yes |ufw enable
+  
+}
+
 ####################
 ## MAIN FUNCTIONS ##
 ####################
@@ -339,6 +392,7 @@ function perform_install {
   ptdl_dl
   systemd_file
   [ "$INSTALL_MARIADB" == true ] && install_mariadb
+  [ "$INSTALL_CUSTOM" == true ] && install_custom
 
   # return true if script has made it this far
   return 0
@@ -371,7 +425,8 @@ function main {
   print_brake 70
 
   # checks if the system is compatible with this installation script
-  check_os_comp
+  #check_os_comp
+  # UBUNTU 20.04
 
   echo "* "
   echo "* The installer will install Docker, required dependencies for Wings"
@@ -385,10 +440,19 @@ function main {
   print_brake 42
 
   echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you installed the Pterodactyl panel on the same machine, do not use this option or the script will fail!"
+
+  echo -e "* ${COLOR_RED}Note${COLOR_NC}: You have to certbot SSL yourself."
+
   echo -n "* Would you like to install MariaDB (MySQL) server on the daemon as well? (y/N): "
 
   read -r CONFIRM_INSTALL_MARIADB
   [[ "$CONFIRM_INSTALL_MARIADB" =~ [Yy] ]] && INSTALL_MARIADB=true
+
+  echo -e "* PERFORM CUSTOM FUNCTION? (y/N): "
+
+  read -r CONFIRM_INSTALL_CUSTOM
+  [[ "$CONFIRM_INSTALL_CUSTOM" =~ [Yy] ]] && INSTALL_CUSTOM=true
+
 
   echo -n "* Proceed with installation? (y/N): "
 
@@ -409,7 +473,8 @@ function goodbye {
   echo "* systemctl start wings"
   echo "* "
   echo -e "* ${COLOR_RED}Note${COLOR_NC}: It is recommended to enable swap (for Docker, read more about it in official documentation)."
-  echo -e "* ${COLOR_RED}Note${COLOR_NC}: This script does not configure your firewall. Ports 8080 and 2022 needs to be open."
+  #echo -e "* ${COLOR_RED}Note${COLOR_NC}: This script does not configure your firewall. Ports 8080 and 2022 needs to be open."
+  echo -e "* ${COLOR_RED}Note${COLOR_NC}:
   print_brake 70
   echo ""
 }
