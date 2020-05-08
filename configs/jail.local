@@ -1,0 +1,9 @@
+[DEFAULT]
+# Ban hosts for ten hours:
+bantime = 36000
+
+# Override /etc/fail2ban/jail.d/00-firewalld.conf:
+banaction = iptables-multiport
+
+[sshd]
+enabled = true

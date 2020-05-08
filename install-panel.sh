@@ -55,7 +55,7 @@ CONFIGURE_LETSENCRYPT=false
 # download URLs
 # PANEL_DL_URL="https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
 PANEL_DL_URL="https://github.com/pterodactyl/panel/releases/download/v1.0.0-beta.3/panel.tar.gz" # REVERT THIS BEFORE MERGING!
-CONFIGS_URL="https://raw.githubusercontent.com/vilhelmprytz/pterodactyl-installer/master/configs"
+CONFIGS_URL="https://raw.githubusercontent.com/ihsakashi/pterodactyl-installer/new/configs"
 
 # apt sources path
 SOURCES_PATH="/etc/apt/sources.list"
@@ -314,6 +314,21 @@ function create_database {
 
     echo "* MySQL database created & configured!"
   fi
+
+  echo "* "
+  if [ -f /etc/mysql/my.cnf ] ; then
+        sed -i -- 's/bind-address/# bind-address/g' /etc/mysql/my.cnf
+		sed -i '/\[mysqld\]/a bind-address = 0.0.0.0' /etc/mysql/my.cnf
+		echo "Restarting MySQL process..."
+		systemctl restart mariadb
+	elif [ -f /etc/my.cnf ] ; then
+        sed -i -- 's/bind-address/# bind-address/g' /etc/my.cnf
+		sed -i '/\[mysqld\]/a bind-address = 0.0.0.0' /etc/my.cnf
+		echo "Restarting MySQL process..."
+		systemctl restart mariadb
+	else 
+		echo "File my.cnf was not found! Please contact support."
+	fi
 }
 
 ##################################
@@ -550,9 +565,43 @@ function centos_php {
 function firewall_ufw {
   apt update
   apt install ufw -y
+  apt install fail2ban -y
+
+  rm -rf /etc/rc.local
+  printf '%s\n' '#!/bin/bash' 'exit 0' | sudo tee -a /etc/rc.local
+  chmod +x /etc/rc.local
+
+  iptables -t mangle -A PREROUTING -m conntrack --ctstate INVALID -j DROP
+  iptables -t mangle -A PREROUTING -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+  iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate NEW -m tcpmss ! --mss 536:65535 -j DROP
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG NONE -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,SYN FIN,SYN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags SYN,RST SYN,RST -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,RST FIN,RST -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags FIN,ACK FIN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,URG URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,FIN FIN -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ACK,PSH PSH -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL ALL -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL NONE -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL FIN,PSH,URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL SYN,FIN,PSH,URG -j DROP 
+  iptables -t mangle -A PREROUTING -p tcp --tcp-flags ALL SYN,RST,ACK,FIN,URG -j DROP
+  iptables -A INPUT -p tcp -m connlimit --connlimit-above 1000 --connlimit-mask 32 --connlimit-saddr -j REJECT --reject-with tcp-reset
+  iptables -t mangle -A PREROUTING -f -j DROP
+  /sbin/iptables -N port-scanning 
+  /sbin/iptables -A port-scanning -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s --limit-burst 2 -j RETURN 
+  /sbin/iptables -A port-scanning -j DROP  
+  sh -c "iptables-save > /etc/iptables.conf"
+  sed -i -e '$i \iptables-restore < /etc/iptables.conf\n' /etc/rc.local
+
+  echo -e "\n* Enabling fail2ban"
+  systemctl enable fail2ban
+  curl -o /etc/fail2ban/jail.d/00-firewalld.conf $CONFIGS_URL/jail.local
+  systemctl restart fail2ban
 
   echo -e "\n* Enabling Uncomplicated Firewall (UFW)"
-  echo "* Opening port 22 (SSH), 80 (HTTP) and 443 (HTTPS)"
+  echo "* Opening port 22 (SSH), 80 (HTTP), 443 (HTTPS), and 3306 (MYSQL)"
 
   # pointing to /dev/null silences the command output
   ufw allow ssh > /dev/null
@@ -569,7 +618,7 @@ function debian_based_letsencrypt {
 
   systemctl stop nginx
 
-  echo -e "\nMake sure you choose Option 1, and create a Standalone Web Server during the certificate"
+  #echo -e "\nMake sure you choose Option 1, and create a Standalone Web Server during the certificate"
   certbot certonly -d "$FQDN"
 
   systemctl restart nginx
@@ -636,7 +685,7 @@ function install_daemon {
   read -r INSTALL_DAEMON
 
   if [[ "$INSTALL_DAEMON" =~ [Yy] ]]; then
-    bash <(curl -s https://raw.githubusercontent.com/vilhelmprytz/pterodactyl-installer/master/install-wings.sh)
+    bash <(curl -s https://raw.githubusercontent.com/ihsakashi/pterodactyl-installer/new/install-wings.sh)
   fi
 }
 
